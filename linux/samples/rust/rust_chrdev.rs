@@ -40,36 +40,38 @@ impl file::Operations for RustFile {
     }
 
     fn write(_this: &Self, _file: &file::File, _reader: &mut impl kernel::io_buffer::IoBufferReader, _offset: u64) -> Result<usize> {
+        // empty return , nothing to do
         if _reader.is_empty() {
             return Ok(0);
         }
-        let mut inner = _this.inner.lock();
-        let data = _reader.read_all()?;
 
-        // pr_info!("data len: {}\n", data.len());
+        let mut buf = _this.inner.lock();
 
-        inner[..data.len()].copy_from_slice(&data);
-        Ok(data.len())
+        // check data len with max buf size
+        let mut data_len = _reader.len();
+        if data_len > GLOBALMEM_SIZE {
+            data_len = GLOBALMEM_SIZE
+        }
+
+        // pr_info!("offset: {} data len: {}\n", _offset, data_len);
+
+        _reader.read_slice(&mut buf[..data_len])?;
+
+        Ok(data_len)
     }
 
     fn read(_this: &Self, _file: &file::File, _writer: &mut impl kernel::io_buffer::IoBufferWriter, _offset: u64) -> Result<usize> {
-        let mut inner = _this.inner.lock();
-        if is_zero_filled(&(*inner)) {
+        let buf = &mut _this.inner.lock();
+
+        // check _offset out of max buf size
+        if _offset as usize >= GLOBALMEM_SIZE {
             return Ok(0);
         }
-        let all = inner.len();
-        _writer.write_slice(&mut *inner)?;
 
-        for element in inner.iter_mut() {
-            *element = 0;
-        }
+        _writer.write_slice(&buf[_offset as usize..])?;
 
-        Ok(all)
+        Ok(buf.len())
     }
-}
-
-fn is_zero_filled(array: &[u8]) -> bool {
-    array.iter().all(|&x| x == 0)
 }
 
 struct RustChrdev {
