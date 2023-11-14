@@ -24,7 +24,7 @@ static GLOBALMEM_BUF: Mutex<[u8;GLOBALMEM_SIZE]> = unsafe {
 
 struct RustFile {
     #[allow(dead_code)]
-    inner: &'static Mutex<[u8;GLOBALMEM_SIZE]>,
+    inner: &'static Mutex<[u8; GLOBALMEM_SIZE]>,
 }
 
 #[vtable]
@@ -39,13 +39,37 @@ impl file::Operations for RustFile {
         )
     }
 
-    fn write(_this: &Self,_file: &file::File,_reader: &mut impl kernel::io_buffer::IoBufferReader,_offset:u64,) -> Result<usize> {
-        Err(EPERM)
+    fn write(_this: &Self, _file: &file::File, _reader: &mut impl kernel::io_buffer::IoBufferReader, _offset: u64) -> Result<usize> {
+        if _reader.is_empty() {
+            return Ok(0);
+        }
+        let mut inner = _this.inner.lock();
+        let data = _reader.read_all()?;
+
+        // pr_info!("data len: {}\n", data.len());
+
+        inner[..data.len()].copy_from_slice(&data);
+        Ok(data.len())
     }
 
-    fn read(_this: &Self,_file: &file::File,_writer: &mut impl kernel::io_buffer::IoBufferWriter,_offset:u64,) -> Result<usize> {
-        Err(EPERM)
+    fn read(_this: &Self, _file: &file::File, _writer: &mut impl kernel::io_buffer::IoBufferWriter, _offset: u64) -> Result<usize> {
+        let mut inner = _this.inner.lock();
+        if is_zero_filled(&(*inner)) {
+            return Ok(0);
+        }
+        let all = inner.len();
+        _writer.write_slice(&mut *inner)?;
+
+        for element in inner.iter_mut() {
+            *element = 0;
+        }
+
+        Ok(all)
     }
+}
+
+fn is_zero_filled(array: &[u8]) -> bool {
+    array.iter().all(|&x| x == 0)
 }
 
 struct RustChrdev {
