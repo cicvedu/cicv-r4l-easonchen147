@@ -114,34 +114,50 @@ struct E1000DrvPrvData {
     irq: u32,
     _netdev_reg: net::Registration<NetDevice>,
     dev_ptr: *mut bindings::pci_dev,
-    e1000_hw_ops: Arc<E1000Ops>,
-    _irq_handler: AtomicPtr<kernel::irq::Registration<E1000InterruptHandler>>,
 }
+
+unsafe impl Send for E1000DrvPrvData {}
+unsafe impl Sync for E1000DrvPrvData {}
 
 // 相关资源填充，补充赋值需要释放的资源
 Ok(Box::try_new(
-        E1000DrvPrvData {
-            bars,
-            irq: irq,
-            // Must hold this registration, or the device will be removed.
-            _netdev_reg: netdev_reg,
-            dev_ptr: dev.to_ptr(),
-            e1000_hw_ops: Arc::try_new(e1000_hw_ops)?,
-            _irq_handler: AtomicPtr::new(core::ptr::null_mut()),
-        }
-    )?)
+            E1000DrvPrvData {
+                bars,
+                irq: irq,
+                // Must hold this registration, or the device will be removed.
+                _netdev_reg: netdev_reg,
+                dev_ptr: dev.to_ptr(),
+            }
+)?)
 ```
 
 释放资源
 ```rust
 // 资源句柄释放
-impl driver::DeviceRemoval for E1000DrvPrvData {
-    fn device_remove(&self) {
-        pr_info!("Rust for linux e1000 driver demo (device_remove)\n");
+fn stop(_dev: &net::Device, _data: &NetDevicePrvData) -> Result {
+        pr_info!("Rust for linux e1000 driver demo (net device stop..)\n");
 
-        drop(&self._irq_handler.load(core::sync::atomic::Ordering::Relaxed));
-        drop(&self._netdev_reg);
-    }
+        Self::e1000_cleanup_tx_resources(_data);
+        Self::e1000_cleanup_rx_resources(_data);
+
+        // 获取irq_handler的指针
+        let irq_handler_ptr = _data._irq_handler.load(core::sync::atomic::Ordering::Relaxed);
+
+        // 确保指针不为空，然后释放资源
+        if !irq_handler_ptr.is_null() {
+            unsafe {
+                let _irq_handler_box = Box::from_raw(irq_handler_ptr);
+            }
+            _data._irq_handler.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Relaxed);
+        }
+
+        _dev.netif_stop_queue();
+        _dev.netif_carrier_off();
+
+        _data.e1000_hw_ops.e1000_reset_hw();
+        _data.napi.disable();
+        
+        Ok(())
 }
 ```
 
@@ -149,25 +165,37 @@ impl driver::DeviceRemoval for E1000DrvPrvData {
 ```rust
 // 完善 remove 方法，进行资源释放
 fn remove(data: &Self::Data) {
-    pr_info!("Rust for linux e1000 driver demo (remove)\n");
+        pr_info!("Rust for linux e1000 driver demo (remove)\n");
 
-    let netdev = data._netdev_reg.dev_get();
-    let bars = data.bars;
-    let pci_dev_ptr = data.dev_ptr;
+        let netdev = data._netdev_reg.dev_get();
+        let bars = data.bars;
+        let pci_dev_ptr = data.dev_ptr;
+        let netdev_reg = &data._netdev_reg;
 
-    data.e1000_hw_ops.as_arc_borrow().e1000_reset_hw();
-    netdev.netif_carrier_off();
-    netdev.netif_stop_queue();
+        netdev.netif_carrier_off();
+        netdev.netif_stop_queue();
 
-    unsafe {
-        bindings::pci_clear_master(pci_dev_ptr);
-        bindings::pci_release_selected_regions(pci_dev_ptr, bars);
-        bindings::pci_disable_device(pci_dev_ptr);
-    }
+        unsafe {
+            bindings::pci_release_selected_regions(pci_dev_ptr, bars);
+            bindings::pci_clear_master(pci_dev_ptr);
+            bindings::pci_disable_device(pci_dev_ptr);
+        }
+
+        drop(netdev_reg);
+        drop(data)
 }
 ```
 
-5.暂时还没能卸载模块后重装，还需要继续释放完整
+5.启动linux内核，进行验证
+
+先安装驱动模块，执行相关命令能ping通
+![4](imgs/4-5.png)
+
+卸载模块
+![4](imgs/4-6.png)
+
+重新安装模块，执行相关命令后，也能正常ping通
+![4](imgs/4-7.png)
 
 
 
