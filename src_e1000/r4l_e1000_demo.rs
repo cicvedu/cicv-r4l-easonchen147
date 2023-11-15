@@ -231,7 +231,7 @@ impl net::DeviceOperations for NetDevice {
         _dev.netif_carrier_off();
 
         _data.e1000_hw_ops.e1000_reset_hw();
-        _data.napi.disable();
+        // _data.napi.disable();
         
         Ok(())
     }
@@ -466,8 +466,6 @@ impl pci::Driver for E1000Drv {
             io_addr: Arc::clone(&io_addr),
         };
         e1000_hw_ops.e1000_reset_hw()?;
-
-        let arc_e1000_hw_ops = Arc::try_new(e1000_hw_ops)?;
 
         // TODO: the MAC address is hardcoded here, should be read out from EEPROM later.
         netdev.eth_hw_addr_set(&MAC_HWADDR);
