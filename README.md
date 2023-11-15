@@ -221,3 +221,21 @@ fn remove(data: &Self::Data) {
 
 3.安装字符设备驱动验证功能
 ![2](imgs/5-2.png)
+
+4.作业问题回答
+
+```rust
+字符设备/dev/cicv是怎么创建的？它的设备号是多少？它是如何与我们写的字符设备驱动关联上的？
+
+在脚本 build_image.sh 里，进行字符设备的创建及ID指定
+
+echo "mknod /dev/cicv c 248 0" >> etc/init.d/rcS   // 命令的意思是指定了 /dev/cicv 作为字符设备，并切指定设备ID为 248
+
+字符设备的关联其实是通过代码里的 Registration 进行关联，因为其使用了 chrdev 的驱动模块，固然内核会自动寻找对应类型，也就是字符设备来进行关联
+
+代码片段：
+let mut chrdev_reg = chrdev::Registration::new_pinned(name, 0, module)?;
+chrdev_reg.as_mut().register::<RustFile>()?;
+chrdev_reg.as_mut().register::<RustFile>()?;
+
+```
