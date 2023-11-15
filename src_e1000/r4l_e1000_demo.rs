@@ -139,6 +139,31 @@ impl NetDevice {
         }
         tx_ring.next_to_clean = idx;
     }
+
+    /// 释放之前设置的所有TX资源。
+    fn e1000_cleanup_tx_resources(data: &NetDevicePrvData) {
+        let mut tx_ring_guard = data.tx_ring.lock();
+        if let Some(tx_ring) = tx_ring_guard.take() {
+            // 释放TX描述符的DMA空间
+            drop(tx_ring); 
+        }
+    }
+
+    /// 释放之前设置的所有RX资源。
+    fn e1000_cleanup_rx_resources(data: &NetDevicePrvData) {
+        let mut rx_ring_guard = data.rx_ring.lock();
+        if let Some(mut rx_ring) = rx_ring_guard.take() {
+            // 清理与RX描述符相关联的DMA映射和缓冲区
+            for entry in rx_ring.buf.borrow_mut().iter_mut() {
+                if let Some((dma_map, skb)) = entry.take() {
+                    drop(dma_map); 
+                    drop(skb); 
+                }
+            }
+            drop(rx_ring); 
+        }
+    }
+    
 }
 
 #[vtable]
@@ -187,6 +212,27 @@ impl net::DeviceOperations for NetDevice {
 
     fn stop(_dev: &net::Device, _data: &NetDevicePrvData) -> Result {
         pr_info!("Rust for linux e1000 driver demo (net device stop..)\n");
+
+        Self::e1000_cleanup_tx_resources(_data);
+        Self::e1000_cleanup_rx_resources(_data);
+
+        // 获取irq_handler的指针
+        let irq_handler_ptr = _data._irq_handler.load(core::sync::atomic::Ordering::Relaxed);
+
+        // 确保指针不为空，然后释放资源
+        if !irq_handler_ptr.is_null() {
+            unsafe {
+                let _irq_handler_box = Box::from_raw(irq_handler_ptr);
+            }
+            _data._irq_handler.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Relaxed);
+        }
+
+        _dev.netif_stop_queue();
+        _dev.netif_carrier_off();
+
+        _data.e1000_hw_ops.e1000_reset_hw();
+        _data.napi.disable();
+        
         Ok(())
     }
 
@@ -290,15 +336,15 @@ struct E1000DrvPrvData {
     irq: u32,
     _netdev_reg: net::Registration<NetDevice>,
     dev_ptr: *mut bindings::pci_dev,
-    e1000_hw_ops: Arc<E1000Ops>,
-    _irq_handler: AtomicPtr<kernel::irq::Registration<E1000InterruptHandler>>,
 }
+
+unsafe impl Send for E1000DrvPrvData {}
+unsafe impl Sync for E1000DrvPrvData {}
 
 impl driver::DeviceRemoval for E1000DrvPrvData {
     fn device_remove(&self) {
         pr_info!("Rust for linux e1000 driver demo (device_remove)\n");
 
-        drop(&self._irq_handler.load(core::sync::atomic::Ordering::Relaxed));
         drop(&self._netdev_reg);
     }
 }
@@ -462,8 +508,6 @@ impl pci::Driver for E1000Drv {
                 // Must hold this registration, or the device will be removed.
                 _netdev_reg: netdev_reg,
                 dev_ptr: dev.to_ptr(),
-                e1000_hw_ops: Arc::try_new(e1000_hw_ops)?,
-                _irq_handler: AtomicPtr::new(core::ptr::null_mut()),
             }
         )?)
     }
@@ -474,16 +518,19 @@ impl pci::Driver for E1000Drv {
         let netdev = data._netdev_reg.dev_get();
         let bars = data.bars;
         let pci_dev_ptr = data.dev_ptr;
+        let netdev_reg = &data._netdev_reg;
 
-        data.e1000_hw_ops.as_arc_borrow().e1000_reset_hw();
         netdev.netif_carrier_off();
         netdev.netif_stop_queue();
 
         unsafe {
-            bindings::pci_clear_master(pci_dev_ptr);
             bindings::pci_release_selected_regions(pci_dev_ptr, bars);
+            bindings::pci_clear_master(pci_dev_ptr);
             bindings::pci_disable_device(pci_dev_ptr);
         }
+
+        drop(netdev_reg);
+        drop(data)
     }
 }
 
